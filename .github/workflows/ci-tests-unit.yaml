@@ -100,7 +100,7 @@ jobs:
           fi
       - name: Tensile selection (shadow)
         id: tensile
-        uses: rsyed94/tensile-action@bf465a2f8f66e7225ed32003c1661ee984aa33d3
+        uses: rsyed94/tensile-action@565d2d0b8a21124e4bdffce3a82a90c826692b78
         continue-on-error: true
         with:
           phase: select
@@ -109,6 +109,7 @@ jobs:
           service-url: https://jiffy-app-production.up.railway.app
           check-run-id: ${{ job.check_run_id }}
           matrix-key: ${{ toJSON(matrix) }}
+          shard: ${{ matrix.shard }}/${{ strategy.job-total }}
           test-step: Run Vitest tests with coverage
           report: .jiffy/no-report.json
 
