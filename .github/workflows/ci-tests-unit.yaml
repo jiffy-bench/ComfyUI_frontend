@@ -14,11 +14,35 @@ on:
     # still supersede. The ref stays in the key so a release-branch push of the
     # same commit cannot cancel main's run.
   pull_request:
+  merge_group:
+    types:
+      - checks_requested
 concurrency:
   group: ${{ github.workflow }}-unit-${{ github.ref }}-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || '' }}
   cancel-in-progress: true
 
 jobs:
+  jiffy-gate:
+    name: Jiffy gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run-all: ${{ steps.gate.outputs.run-all || 'true' }}
+      tests: ${{ steps.gate.outputs.tests || '[]' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: rsyed94/jiffy@27fc5c2fdd33ad5d0ced231fbddb56155aaab5bd # action/v1
+        id: gate
+        continue-on-error: true
+        with:
+          service-url: https://jiffy-app-production.up.railway.app
+          run-all: ${{ vars.JIFFY_RUN_ALL }}
+
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -53,14 +77,19 @@ jobs:
 
   test-shards:
     needs:
+      - jiffy-gate
       - changes
-    if: ${{ needs.changes.outputs.should-run == 'true' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.should-run == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      JIFFY_RUN_ALL: ${{ needs.jiffy-gate.outputs.run-all || 'true' }}
+      JIFFY_TESTS: ${{ needs.jiffy-gate.outputs.tests || '[]' }}
+      JIFFY_RECORD: ${{ github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
 
     steps:
       - uses: actions/checkout@v7
@@ -131,18 +160,41 @@ jobs:
           # matching unit-package-coverage comment below).
           retention-days: 7
           if-no-files-found: error
+      - name: Keep Jiffy coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() && env.JIFFY_RECORD == 'true' }}
+        with:
+          name: jiffy-coverage-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Keep test results for Jiffy
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: jiffy-results-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
     permissions:
       contents: read
       id-token: write
 
   test-packages:
     needs:
+      - jiffy-gate
       - changes
-    if: ${{ needs.changes.outputs.should-run == 'true' }}
+    if: ${{ !cancelled() && (needs.changes.outputs.should-run == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      JIFFY_RUN_ALL: ${{ needs.jiffy-gate.outputs.run-all || 'true' }}
+      JIFFY_TESTS: ${{ needs.jiffy-gate.outputs.tests || '[]' }}
+      JIFFY_RECORD: ${{ github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     steps:
       - uses: actions/checkout@v7
       - name: "Replay farm: restore upstream's CI files (upstream's tests read them)"
@@ -202,11 +254,37 @@ jobs:
           # for a short-lived artifact that must still survive a re-run.
           retention-days: 7
           if-no-files-found: error
+      - name: Keep Jiffy coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() && env.JIFFY_RECORD == 'true' }}
+        with:
+          name: jiffy-coverage-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Keep test results for Jiffy
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: jiffy-results-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
 
   test-report:
-    needs: [test-shards, test-packages]
+    needs:
+      - jiffy-gate
+      - test-shards
+      - test-packages
+    if: ${{ !cancelled() && needs.test-shards.result == 'success' && needs.test-packages.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      JIFFY_RUN_ALL: ${{ needs.jiffy-gate.outputs.run-all || 'true' }}
+      JIFFY_TESTS: ${{ needs.jiffy-gate.outputs.tests || '[]' }}
+      JIFFY_RECORD: ${{ github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     steps:
       - uses: actions/checkout@v7
       - name: "Replay farm: restore upstream's CI files (upstream's tests read them)"
@@ -258,6 +336,24 @@ jobs:
           path: coverage/lcov.info
           retention-days: 30
           if-no-files-found: warn
+      - name: Keep Jiffy coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() && env.JIFFY_RECORD == 'true' }}
+        with:
+          name: jiffy-coverage-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Keep test results for Jiffy
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: jiffy-results-${{ github.job }}-${{ strategy.job-index }}
+          path: .jiffy/results/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
 
   test:
     if: ${{ always() }}
@@ -279,5 +375,38 @@ jobs:
           else
             [[ "$SHOULD_RUN" == "true" && "$SHARDS" == "success" && "$PACKAGES" == "success" && "$REPORT" == "success" ]]
           fi
+
+  jiffy-upload:
+    name: Jiffy coverage upload
+    needs:
+      - test-shards
+      - test-packages
+      - test-report
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: jiffy-coverage-*
+          path: jiffy-coverage
+      - name: Upload coverage to Jiffy
+        shell: bash
+        env:
+          JIFFY_SERVER: https://jiffy-app-production.up.railway.app
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=jiffy" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).value))')
+          echo "::add-mask::$token"
+          put() { curl -sSf -X PUT -H "Authorization: Bearer $token" -H "content-type: application/json" --data-binary @"$1" "$JIFFY_SERVER/v1/maps/$GITHUB_REPOSITORY/$GITHUB_SHA/$2/$3"; }
+          for dir in jiffy-coverage/*/; do
+            job=$(basename "$dir")
+            for f in "$dir"coverage-*.json; do case "$f" in *-nodes.json | *-nodes.always-run.json) continue ;; esac; put "$f" parts "$job-$(basename "$f" .json)"; done
+            for f in "$dir"report-*.json; do put "$f" durations "$job-$(basename "$f" .json)"; done
+          done
 permissions:
   contents: read
