@@ -177,6 +177,7 @@ jobs:
             --filter @comfyorg/account-ui \
             --filter @comfyorg/billing-contract \
             --filter @comfyorg/layer-editor \
+            --filter @comfyorg/layer-editor-ui \
             --filter @comfyorg/mask-editor \
             --filter @comfyorg/object-info-parser \
             --filter @comfyorg/shared-frontend-utils \
